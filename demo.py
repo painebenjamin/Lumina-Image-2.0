@@ -87,7 +87,10 @@ def model_main(args, master_port, rank, request_queue, response_queue, mp_barrie
     dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[args.precision]
 
     text_encoder = AutoModel.from_pretrained(
-        "google/gemma-2-2b", torch_dtype=dtype, device_map="cuda", token=args.hf_token
+        "google/gemma-2-2b",
+        torch_dtype=dtype,
+        token=args.hf_token,
+        low_cpu_mem_usage=True
     ).eval()
     cap_feat_dim = text_encoder.config.hidden_size
     if args.num_gpus > 1:
@@ -104,7 +107,7 @@ def model_main(args, master_port, rank, request_queue, response_queue, mp_barrie
         qk_norm=train_args.qk_norm,
         cap_feat_dim=cap_feat_dim,
     )
-    model.eval().to("cuda", dtype=dtype)
+    model.eval()
 
     assert train_args.model_parallel_size == args.num_gpus
     if args.ema:
@@ -210,12 +213,15 @@ def model_main(args, master_port, rank, request_queue, response_queue, mp_barrie
                 z = torch.randn([1, 16, latent_h, latent_w], device="cuda").to(dtype)
                 z = z.repeat(2, 1, 1, 1)
 
+                text_encoder.to("cuda", dtype)
                 with torch.no_grad():
                     if neg_cap != "":
                         cap_feats, cap_mask = encode_prompt([cap] + [neg_cap], text_encoder, tokenizer, 0.0)
                     else:
                         cap_feats, cap_mask = encode_prompt([cap] + [""], text_encoder, tokenizer, 0.0)
 
+                text_encoder.to("cpu")
+                model.to("cuda", dtype)
                 cap_mask = cap_mask.to(cap_feats.device)
 
                 model_kwargs = dict(
@@ -256,7 +262,10 @@ def model_main(args, master_port, rank, request_queue, response_queue, mp_barrie
                 }["flux"]
                 print(f"> vae scale: {vae_scale}, shift: {vae_shift}")
                 print("samples.shape", samples.shape)
+                model.to("cpu")
+                vae.to("cuda", dtype)
                 samples = vae.decode(samples / vae_scale + vae_shift).sample
+                vae.to("cpu")
                 samples = (samples + 1.0) / 2.0
                 samples.clamp_(0.0, 1.0)
 
@@ -343,7 +352,7 @@ def main():
     parser.add_argument("--precision", default="bf16", choices=["bf16", "fp32"])
     parser.add_argument("--hf_token", type=str, default=None, help="huggingface read token for accessing gated repo.")
     parser.add_argument("--res", type=int, default=1024, choices=[256, 512, 1024])
-    parser.add_argument("--port", type=int, default=100023)
+    parser.add_argument("--port", type=int, default=9000)
 
     parse_transport_args(parser)
     parse_ode_args(parser)
